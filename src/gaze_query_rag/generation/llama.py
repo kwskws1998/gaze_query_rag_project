@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -35,11 +36,20 @@ def load_llama_generator(
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     resolved_device = resolve_torch_device(device)
-    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=str(cache_dir) if cache_dir else None)
+    token = os.environ.get("HF_TOKEN")
+    if token and token.strip().startswith("<"):
+        raise ValueError("HF_TOKEN is still a placeholder. Export a real Hugging Face token.")
+    auth_kwargs = {"token": token} if token else {}
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name,
+        cache_dir=str(cache_dir) if cache_dir else None,
+        **auth_kwargs,
+    )
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         cache_dir=str(cache_dir) if cache_dir else None,
         torch_dtype=_resolve_dtype(dtype),
+        **auth_kwargs,
     )
     model.to(resolved_device)
     model.eval()
