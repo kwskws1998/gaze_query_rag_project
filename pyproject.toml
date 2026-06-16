@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gaze-query-rag"
+version = "0.1.0"
+description = "No-training reader-specific gaze-query RAG prototype for OneStop QA."
+readme = "project_overview.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "pyyaml>=6.0",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+models = [
+  "accelerate>=0.30",
+  "datasets>=2.18",
+  "huggingface_hub>=0.23,<1.0",
+  "protobuf>=4.25",
+  "safetensors>=0.4",
+  "sentencepiece>=0.2",
+  "torch>=2.1",
+  "transformers>=4.45,<5",
+]
+setup = [
+  "gdown>=5.2",
+]
+test = [
+  "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

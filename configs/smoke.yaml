@@ -1,0 +1,22 @@
+seed: 13
+paths:
+  artifacts_dir: artifacts
+  onestop_ia_path: OneStop-Eye-Movements/data/OneStop/osfstorage-archive (1)/ia_Paragraph.csv.zip
+  onestop_qa_json_path: OneStop-Eye-Movements/data_preprocessing/onestop_qa.json
+data:
+  qa_dataset_name: malmaud/onestop_qa
+  qa_split: null
+  max_examples: 8
+  max_readers_per_example: 3
+chunking:
+  strategy: sentence
+  max_words: 80
+  stride: 0
+retrieval:
+  top_k: 3
+models:
+  encoder_name: intfloat/e5-large-v2
+  generator_name: meta-llama/Meta-Llama-3-8B-Instruct
+  smoke_generator_fallback_name: google/flan-t5-small
+  device: auto
+  dtype: auto
