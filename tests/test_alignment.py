@@ -24,6 +24,36 @@ def _gaze(reader_id: str, paragraph_id: str = "p1", word_index: int = 1) -> Gaze
     )
 
 
+def test_alignment_uses_title_level_question_metadata_fallback() -> None:
+    qa = QAExample(
+        example_id="hf1",
+        paragraph_id="0",
+        paragraph_text="HF paragraph text differs slightly.",
+        question="Who found it?",
+        choices=["A", "B", "C", "D"],
+        answer_index=0,
+        metadata={"raw": {"title": "Bottle Story", "level": 0}},
+    )
+    gaze = GazeRecord(
+        reader_id="r1",
+        paragraph_id="batch=1|article=2|paragraph=3|level=Adv|question=0",
+        word_index=1,
+        word="Bottle",
+        trt=10.0,
+        metadata={
+            "article_title": "Bottle Story",
+            "difficulty_level": "Adv",
+            "question": "Who found it?",
+            "paragraph": "OneStop paragraph text differs slightly.",
+        },
+    )
+
+    aligned = align_qa_with_gaze([qa], [gaze])
+
+    assert len(aligned) == 1
+    assert list(aligned[0].reader_gaze) == ["r1"]
+
+
 def test_alignment_report_is_generated() -> None:
     qa_examples = [_qa(), _qa("q2", "missing")]
     gaze_records = [_gaze("r1", word_index=2), _gaze("r1", word_index=1), _gaze("r2")]

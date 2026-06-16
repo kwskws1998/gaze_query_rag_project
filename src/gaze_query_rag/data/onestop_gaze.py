@@ -84,6 +84,7 @@ def normalize_gaze_schema(df: pd.DataFrame) -> pd.DataFrame:
         for column in [
             "article_batch",
             "article_id",
+            "article_title",
             "paragraph_id",
             "difficulty_level",
             "onestopqa_question_id",

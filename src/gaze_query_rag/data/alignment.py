@@ -10,6 +10,43 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+def _normalize_level(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(int(value))
+    if isinstance(value, int):
+        return {0: "adv", 1: "int", 2: "ele"}.get(value, str(value).lower())
+    text = str(value).strip().lower()
+    if text.isdigit():
+        return {0: "adv", 1: "int", 2: "ele"}.get(int(text), text)
+    if text.startswith("adv"):
+        return "adv"
+    if text.startswith("int"):
+        return "int"
+    if text.startswith("ele"):
+        return "ele"
+    return text
+
+
+def _qa_metadata_key(qa: QAExample) -> tuple[str, str, str] | None:
+    raw = qa.metadata.get("raw") if isinstance(qa.metadata.get("raw"), dict) else {}
+    title = raw["title"] if "title" in raw else qa.metadata.get("article_title")
+    level = raw["level"] if "level" in raw else qa.metadata.get("difficulty_level")
+    if title is None or level is None:
+        return None
+    return (_normalize_text(str(title)), _normalize_level(level), _normalize_text(qa.question))
+
+
+def _gaze_metadata_key(record: GazeRecord) -> tuple[str, str, str] | None:
+    title = record.metadata.get("article_title")
+    level = record.metadata.get("difficulty_level")
+    question = record.metadata.get("question")
+    if title is None or level is None or question is None:
+        return None
+    return (_normalize_text(str(title)), _normalize_level(level), _normalize_text(str(question)))
+
+
 def _sorted_reader_gaze(records: list[GazeRecord]) -> dict[str, list[GazeRecord]]:
     by_reader: dict[str, list[GazeRecord]] = defaultdict(list)
     for record in records:
@@ -34,10 +71,15 @@ def _group_gaze_by_text(
 ) -> tuple[
     dict[tuple[str, str], dict[str, list[GazeRecord]]],
     dict[str, dict[str, list[GazeRecord]]],
+    dict[tuple[str, str, str], dict[str, list[GazeRecord]]],
 ]:
     by_text_question: dict[tuple[str, str], list[GazeRecord]] = defaultdict(list)
     by_text: dict[str, list[GazeRecord]] = defaultdict(list)
+    by_metadata_question: dict[tuple[str, str, str], list[GazeRecord]] = defaultdict(list)
     for record in gaze_records:
+        metadata_key = _gaze_metadata_key(record)
+        if metadata_key is not None:
+            by_metadata_question[metadata_key].append(record)
         paragraph = record.metadata.get("paragraph")
         if not paragraph:
             continue
@@ -49,6 +91,7 @@ def _group_gaze_by_text(
     return (
         {key: _sorted_reader_gaze(records) for key, records in by_text_question.items()},
         {key: _sorted_reader_gaze(records) for key, records in by_text.items()},
+        {key: _sorted_reader_gaze(records) for key, records in by_metadata_question.items()},
     )
 
 
@@ -56,7 +99,7 @@ def align_qa_with_gaze(
     qa_examples: list[QAExample], gaze_records: list[GazeRecord]
 ) -> list[AlignedExample]:
     by_paragraph = _group_gaze_by_paragraph(gaze_records)
-    by_text_question, by_text = _group_gaze_by_text(gaze_records)
+    by_text_question, by_text, by_metadata_question = _group_gaze_by_text(gaze_records)
 
     aligned: list[AlignedExample] = []
     for qa in qa_examples:
@@ -65,6 +108,10 @@ def align_qa_with_gaze(
             text_key = _normalize_text(qa.paragraph_text)
             question_key = _normalize_text(qa.question)
             reader_gaze = by_text_question.get((text_key, question_key))
+        if reader_gaze is None:
+            metadata_key = _qa_metadata_key(qa)
+            if metadata_key is not None:
+                reader_gaze = by_metadata_question.get(metadata_key)
         if reader_gaze is None:
             reader_gaze = by_text.get(_normalize_text(qa.paragraph_text))
         if reader_gaze:

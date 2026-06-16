@@ -24,6 +24,7 @@ IA_COLUMNS = [
     "participant_id",
     "article_batch",
     "article_id",
+    "article_title",
     "paragraph_id",
     "difficulty_level",
     "onestopqa_question_id",
@@ -100,10 +101,43 @@ def _normalized_text_series(series: pd.Series) -> pd.Series:
     return series.fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip().str.lower()
 
 
+def _normalize_level(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(int(value))
+    if isinstance(value, int):
+        return {0: "adv", 1: "int", 2: "ele"}.get(value, str(value).lower())
+    text = str(value).strip().lower()
+    if text.isdigit():
+        return {0: "adv", 1: "int", 2: "ele"}.get(int(text), text)
+    if text.startswith("adv"):
+        return "adv"
+    if text.startswith("int"):
+        return "int"
+    if text.startswith("ele"):
+        return "ele"
+    return text
+
+
+def _qa_metadata_key(qa: QAExample) -> tuple[str, str, str] | None:
+    raw = qa.metadata.get("raw") if isinstance(qa.metadata.get("raw"), dict) else {}
+    title = raw["title"] if "title" in raw else qa.metadata.get("article_title")
+    level = raw["level"] if "level" in raw else qa.metadata.get("difficulty_level")
+    if title is None or level is None:
+        return None
+    return (
+        _normalize_match_text(str(title)),
+        _normalize_level(level),
+        _normalize_match_text(qa.question),
+    )
+
+
 def _load_matching_gaze_records(
     ia_path: Path,
     target_paragraph_ids: set[str],
     target_paragraph_texts: set[str],
+    target_metadata_keys: set[tuple[str, str, str]],
     chunksize: int,
     include_practice: bool,
     exclude_repeated: bool,
@@ -118,11 +152,23 @@ def _load_matching_gaze_records(
             continue
         paragraph_ids = _paragraph_ids_for_chunk(chunk)
         id_mask = paragraph_ids.isin(target_paragraph_ids)
+        metadata_mask = pd.Series(False, index=chunk.index)
+        if target_metadata_keys:
+            title_values = _normalized_text_series(chunk["article_title"])
+            level_values = chunk["difficulty_level"].map(_normalize_level)
+            question_values = _normalized_text_series(chunk["question"])
+            metadata_mask = pd.Series(
+                [
+                    (title, level, question) in target_metadata_keys
+                    for title, level, question in zip(title_values, level_values, question_values)
+                ],
+                index=chunk.index,
+            )
         if target_paragraph_texts:
             text_mask = _normalized_text_series(chunk["paragraph"]).isin(target_paragraph_texts)
-            filtered = chunk[id_mask | text_mask]
+            filtered = chunk[id_mask | text_mask | metadata_mask]
         else:
-            filtered = chunk[id_mask]
+            filtered = chunk[id_mask | metadata_mask]
         if filtered.empty:
             continue
         canonical = normalize_gaze_schema(filtered)
@@ -193,10 +239,12 @@ def main() -> None:
     qa_examples = _limit_examples(qa_examples, args.max_examples)
     target_paragraph_ids = {qa.paragraph_id for qa in qa_examples}
     target_paragraph_texts = {_normalize_match_text(qa.paragraph_text) for qa in qa_examples}
+    target_metadata_keys = {key for qa in qa_examples if (key := _qa_metadata_key(qa)) is not None}
     gaze_records = _load_matching_gaze_records(
         args.ia_path,
         target_paragraph_ids=target_paragraph_ids,
         target_paragraph_texts=target_paragraph_texts,
+        target_metadata_keys=target_metadata_keys,
         chunksize=args.chunksize,
         include_practice=args.include_practice,
         exclude_repeated=args.exclude_repeated,
