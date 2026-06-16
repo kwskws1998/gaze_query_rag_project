@@ -200,6 +200,8 @@ def load_onestop_qa(
             answer_index = (
                 _coerce_answer_index(row[schema["answer"]]) if schema.get("answer") else None
             )
+            if answer_index is None and str(dataset_name) == "malmaud/onestop_qa":
+                answer_index = 0
             paragraph_id = str(row.get(schema.get("paragraph_id", ""), idx))
             example_id = str(row.get(schema.get("example_id", ""), idx))
             examples.append(

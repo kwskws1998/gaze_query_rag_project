@@ -11,6 +11,7 @@ INSTALL_TORCH="${INSTALL_TORCH:-1}"
 INSTALL_PROJECT="${INSTALL_PROJECT:-1}"
 DOWNLOAD_DATA="${DOWNLOAD_DATA:-1}"
 DOWNLOAD_HF="${DOWNLOAD_HF:-1}"
+FORCE_DOWNLOAD_DATA="${FORCE_DOWNLOAD_DATA:-0}"
 INCLUDE_DATASET="${INCLUDE_DATASET:-1}"
 INCLUDE_LLAMA3="${INCLUDE_LLAMA3:-0}"
 RUN_TESTS="${RUN_TESTS:-1}"
@@ -45,7 +46,9 @@ fi
 mkdir -p "$(dirname "${DATA_ARCHIVE}")"
 
 if [[ "${DOWNLOAD_DATA}" == "1" ]]; then
-  if [[ -n "${GDRIVE_URL}" ]]; then
+  if [[ -f "${DATA_ARCHIVE}" && "${FORCE_DOWNLOAD_DATA}" != "1" ]]; then
+    echo "Using existing data archive: ${DATA_ARCHIVE}"
+  elif [[ -n "${GDRIVE_URL}" ]]; then
     if [[ "${GDRIVE_URL}" =~ /d/([^/]+) ]]; then
       "${PYTHON_BIN}" -m gdown "https://drive.google.com/uc?id=${BASH_REMATCH[1]}" -O "${DATA_ARCHIVE}"
     else

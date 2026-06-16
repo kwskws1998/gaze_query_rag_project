@@ -126,3 +126,41 @@ python scripts/run_generation.py \
   --dtype float16 \
   --scoring-mode loglik
 ```
+
+## 9. One-Shot Observed Llama 3 Pipeline
+
+This runs setup, data download, model caching, alignment, embeddings, retrieval, generation, and evaluation.
+
+```bash
+HF_TOKEN="<YOUR_HF_TOKEN>" \
+bash scripts/run_llama3_observed_pipeline.sh
+```
+
+Defaults:
+
+```text
+ART=artifacts/observed_regular_llama3
+CONDITIONS="text mean_gaze actual_gaze shuffled_gaze"
+GENERATOR_NAME=meta-llama/Meta-Llama-3-8B-Instruct
+DEVICE=cuda
+DTYPE=float16
+TOP_K=3
+USE_HF_QA=auto
+```
+
+If the Google Drive bundle only extracts `osfstorage-archive (1)/ia_Paragraph.csv.zip`, the script uses that IA file and loads QA from `malmaud/onestop_qa`.
+
+Useful overrides:
+
+```bash
+ART=artifacts/observed_regular_llama3_v2 \
+RUN_BOOTSTRAP=0 \
+bash scripts/run_llama3_observed_pipeline.sh
+```
+
+```bash
+MAX_EXAMPLES=20 \
+MAX_READERS_PER_EXAMPLE=3 \
+ART=artifacts/llama3_debug \
+bash scripts/run_llama3_observed_pipeline.sh
+```

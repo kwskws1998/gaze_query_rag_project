@@ -92,9 +92,18 @@ def _paragraph_ids_for_chunk(chunk: pd.DataFrame) -> pd.Series:
     )
 
 
+def _normalize_match_text(text: str) -> str:
+    return " ".join(str(text).split()).strip().lower()
+
+
+def _normalized_text_series(series: pd.Series) -> pd.Series:
+    return series.fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip().str.lower()
+
+
 def _load_matching_gaze_records(
     ia_path: Path,
     target_paragraph_ids: set[str],
+    target_paragraph_texts: set[str],
     chunksize: int,
     include_practice: bool,
     exclude_repeated: bool,
@@ -108,7 +117,12 @@ def _load_matching_gaze_records(
         if chunk.empty:
             continue
         paragraph_ids = _paragraph_ids_for_chunk(chunk)
-        filtered = chunk[paragraph_ids.isin(target_paragraph_ids)]
+        id_mask = paragraph_ids.isin(target_paragraph_ids)
+        if target_paragraph_texts:
+            text_mask = _normalized_text_series(chunk["paragraph"]).isin(target_paragraph_texts)
+            filtered = chunk[id_mask | text_mask]
+        else:
+            filtered = chunk[id_mask]
         if filtered.empty:
             continue
         canonical = normalize_gaze_schema(filtered)
@@ -178,9 +192,11 @@ def main() -> None:
         qa_examples = load_local_onestop_qa_json(args.qa_json_path)
     qa_examples = _limit_examples(qa_examples, args.max_examples)
     target_paragraph_ids = {qa.paragraph_id for qa in qa_examples}
+    target_paragraph_texts = {_normalize_match_text(qa.paragraph_text) for qa in qa_examples}
     gaze_records = _load_matching_gaze_records(
         args.ia_path,
         target_paragraph_ids=target_paragraph_ids,
+        target_paragraph_texts=target_paragraph_texts,
         chunksize=args.chunksize,
         include_practice=args.include_practice,
         exclude_repeated=args.exclude_repeated,
