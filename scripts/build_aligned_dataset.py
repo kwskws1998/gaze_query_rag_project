@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--qa-json-path",
         type=Path,
-        default=ROOT / "OneStop-Eye-Movements/data_preprocessing/onestop_qa.json",
+        default=ROOT / "resources/onestop_qa.json",
     )
     parser.add_argument("--qa-dataset-name", default="malmaud/onestop_qa")
     parser.add_argument("--qa-split", default=None)

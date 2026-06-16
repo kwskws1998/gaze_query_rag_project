@@ -52,7 +52,8 @@ find_ia_path() {
 QA_ARGS=()
 
 resolve_qa_args() {
-  local default_qa="OneStop-Eye-Movements/data_preprocessing/onestop_qa.json"
+  local default_qa="resources/onestop_qa.json"
+  local secondary_qa="OneStop-Eye-Movements/data_preprocessing/onestop_qa.json"
   case "${USE_HF_QA}" in
     1|true|yes)
       QA_ARGS=(--use-hf)
@@ -69,6 +70,8 @@ resolve_qa_args() {
       local qa_path="${QA_JSON_PATH:-${default_qa}}"
       if [[ -f "${qa_path}" ]]; then
         QA_ARGS=(--qa-json-path "${qa_path}")
+      elif [[ -f "${secondary_qa}" ]]; then
+        QA_ARGS=(--qa-json-path "${secondary_qa}")
       else
         QA_ARGS=(--use-hf)
       fi

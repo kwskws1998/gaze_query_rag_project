@@ -149,6 +149,7 @@ USE_HF_QA=auto
 ```
 
 If the Google Drive bundle only extracts `osfstorage-archive (1)/ia_Paragraph.csv.zip`, the script uses that IA file and loads QA from `malmaud/onestop_qa`.
+The preferred QA source is the bundled lightweight `resources/onestop_qa.json`, which preserves canonical OneStop IDs for gaze alignment.
 
 Useful overrides:
 

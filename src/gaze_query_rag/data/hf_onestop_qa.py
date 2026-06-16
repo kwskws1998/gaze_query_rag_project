@@ -8,7 +8,10 @@ from typing import Any, Iterable
 from gaze_query_rag.schemas import QAExample, SchemaInferenceError
 
 
-LOCAL_FALLBACK = Path("OneStop-Eye-Movements/data_preprocessing/onestop_qa.json")
+LOCAL_FALLBACKS = [
+    Path("resources/onestop_qa.json"),
+    Path("OneStop-Eye-Movements/data_preprocessing/onestop_qa.json"),
+]
 
 
 def _single_match(columns: Iterable[str], candidates: list[str], field_name: str) -> str:
@@ -170,8 +173,11 @@ def _fallback_path() -> Path | None:
     env_path = os.environ.get("ONESTOP_QA_JSON")
     if env_path:
         return Path(env_path)
-    path = Path.cwd() / LOCAL_FALLBACK
-    return path if path.exists() else None
+    for fallback in LOCAL_FALLBACKS:
+        path = Path.cwd() / fallback
+        if path.exists():
+            return path
+    return None
 
 
 def load_onestop_qa(
