@@ -40,6 +40,12 @@ The default Google Drive file is:
 https://drive.google.com/file/d/1lvPnyMV_AbKo2CdcAy3kvQa8qIJuVSeg/view?usp=sharing
 ```
 
+The bootstrap script downloads it through:
+
+```text
+https://drive.google.com/uc?id=1lvPnyMV_AbKo2CdcAy3kvQa8qIJuVSeg
+```
+
 Override with another Google Drive file URL:
 
 ```bash

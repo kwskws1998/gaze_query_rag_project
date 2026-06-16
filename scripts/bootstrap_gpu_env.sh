@@ -46,11 +46,15 @@ mkdir -p "$(dirname "${DATA_ARCHIVE}")"
 
 if [[ "${DOWNLOAD_DATA}" == "1" ]]; then
   if [[ -n "${GDRIVE_URL}" ]]; then
-    "${PYTHON_BIN}" -m gdown --fuzzy "${GDRIVE_URL}" -O "${DATA_ARCHIVE}"
+    if [[ "${GDRIVE_URL}" =~ /d/([^/]+) ]]; then
+      "${PYTHON_BIN}" -m gdown "https://drive.google.com/uc?id=${BASH_REMATCH[1]}" -O "${DATA_ARCHIVE}"
+    else
+      "${PYTHON_BIN}" -m gdown "${GDRIVE_URL}" -O "${DATA_ARCHIVE}"
+    fi
   elif [[ -n "${GDRIVE_ID}" ]]; then
     "${PYTHON_BIN}" -m gdown "https://drive.google.com/uc?id=${GDRIVE_ID}" -O "${DATA_ARCHIVE}"
   else
-    "${PYTHON_BIN}" -m gdown --fuzzy "${DEFAULT_GDRIVE_URL}" -O "${DATA_ARCHIVE}"
+    "${PYTHON_BIN}" -m gdown "https://drive.google.com/uc?id=${DEFAULT_GDRIVE_ID}" -O "${DATA_ARCHIVE}"
   fi
 fi
 
