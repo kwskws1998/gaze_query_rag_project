@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import random
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -81,7 +83,51 @@ def _canonical_local_paragraph_id(
     )
 
 
-def load_local_onestop_qa_json(path: str | Path) -> list[QAExample]:
+def _choice_shuffle_rng(seed: int, example_id: str) -> random.Random:
+    digest = hashlib.sha256(f"{seed}:{example_id}".encode("utf-8")).digest()
+    return random.Random(int.from_bytes(digest[:8], byteorder="big", signed=False))
+
+
+def shuffle_qa_choices(example: QAExample, seed: int) -> QAExample:
+    if len(example.choices) < 2:
+        return example
+    if example.answer_index is not None and not 0 <= example.answer_index < len(example.choices):
+        raise SchemaInferenceError(
+            f"answer_index={example.answer_index} is out of range for {example.example_id!r}"
+        )
+    order = list(range(len(example.choices)))
+    _choice_shuffle_rng(seed, example.example_id).shuffle(order)
+    answer_index = None if example.answer_index is None else order.index(example.answer_index)
+    metadata = dict(example.metadata)
+    metadata["choice_shuffle"] = {
+        "enabled": True,
+        "seed": seed,
+        "order": order,
+        "original_answer_index": example.answer_index,
+        "original_choices": list(example.choices),
+    }
+    return QAExample(
+        example_id=example.example_id,
+        paragraph_id=example.paragraph_id,
+        paragraph_text=example.paragraph_text,
+        question=example.question,
+        choices=[example.choices[index] for index in order],
+        answer_index=answer_index,
+        metadata=metadata,
+    )
+
+
+def maybe_shuffle_qa_choices(
+    examples: list[QAExample], shuffle_choices: bool, choice_seed: int
+) -> list[QAExample]:
+    if not shuffle_choices:
+        return examples
+    return [shuffle_qa_choices(example, choice_seed) for example in examples]
+
+
+def load_local_onestop_qa_json(
+    path: str | Path, shuffle_choices: bool = False, choice_seed: int = 13
+) -> list[QAExample]:
     source_path = Path(path)
     with source_path.open("r", encoding="utf-8") as fh:
         payload = json.load(fh)
@@ -129,7 +175,7 @@ def load_local_onestop_qa_json(path: str | Path) -> list[QAExample]:
                             metadata=metadata,
                         )
                     )
-    return examples
+    return maybe_shuffle_qa_choices(examples, shuffle_choices, choice_seed)
 
 
 def _coerce_choices(value: Any) -> list[str]:
@@ -184,10 +230,12 @@ def load_onestop_qa(
     dataset_name: str = "malmaud/onestop_qa",
     split: str | None = None,
     cache_dir: str | Path | None = None,
+    shuffle_choices: bool = False,
+    choice_seed: int = 13,
 ) -> list[QAExample]:
     candidate_path = Path(dataset_name)
     if candidate_path.exists():
-        return load_local_onestop_qa_json(candidate_path)
+        return load_local_onestop_qa_json(candidate_path, shuffle_choices, choice_seed)
     try:
         from datasets import load_dataset
 
@@ -221,11 +269,11 @@ def load_onestop_qa(
                     metadata={"source": dataset_name, "split": selected_split, "raw": dict(row)},
                 )
             )
-        return examples
+        return maybe_shuffle_qa_choices(examples, shuffle_choices, choice_seed)
     except Exception as exc:
         fallback = _fallback_path()
         if fallback is None:
             raise RuntimeError(
                 f"Could not load Hugging Face dataset {dataset_name!r}, and no local fallback exists."
             ) from exc
-        return load_local_onestop_qa_json(fallback)
+        return load_local_onestop_qa_json(fallback, shuffle_choices, choice_seed)

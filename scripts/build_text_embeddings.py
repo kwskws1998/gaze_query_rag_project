@@ -34,6 +34,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qa-dataset-name", default="malmaud/onestop_qa")
     parser.add_argument("--qa-split", default=None)
     parser.add_argument("--use-hf", action="store_true")
+    parser.add_argument("--shuffle-choices", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--choice-seed", type=int, default=13)
     parser.add_argument("--artifacts-dir", type=Path, default=ROOT / "artifacts")
     parser.add_argument("--encoder-backend", choices=["e5", "hash"], default="e5")
     parser.add_argument("--encoder-name", default="intfloat/e5-large-v2")
@@ -169,9 +171,19 @@ def _save_query_npz(path: Path, query_rows: list[dict[str, Any]], query_vectors:
 
 def _load_qa_examples(args: argparse.Namespace) -> list[QAExample]:
     if args.use_hf:
-        examples = load_onestop_qa(args.qa_dataset_name, args.qa_split, cache_dir=None)
+        examples = load_onestop_qa(
+            args.qa_dataset_name,
+            args.qa_split,
+            cache_dir=None,
+            shuffle_choices=args.shuffle_choices,
+            choice_seed=args.choice_seed,
+        )
     else:
-        examples = load_local_onestop_qa_json(args.qa_json_path)
+        examples = load_local_onestop_qa_json(
+            args.qa_json_path,
+            shuffle_choices=args.shuffle_choices,
+            choice_seed=args.choice_seed,
+        )
     if args.max_examples is not None:
         if args.max_examples <= 0:
             raise ValueError("max_examples must be positive when provided.")
@@ -224,6 +236,7 @@ def main() -> None:
                 "question": example.question,
                 "choices": example.choices,
                 "answer_index": example.answer_index,
+                "choice_shuffle": example.metadata.get("choice_shuffle"),
             }
         )
         query_vectors.append(query_vector.astype(np.float32))
@@ -236,6 +249,8 @@ def main() -> None:
         "encoder_name": args.encoder_name if args.encoder_backend == "e5" else None,
         "device": encoder.device if encoder is not None else "hash",
         "qa_examples": len(qa_examples),
+        "shuffle_choices": args.shuffle_choices,
+        "choice_seed": args.choice_seed if args.shuffle_choices else None,
         "text_embeddings": len(text_ids),
         "query_embeddings": len(query_rows),
         "conditions": ["text"],

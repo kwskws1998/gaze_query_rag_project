@@ -13,6 +13,8 @@ DTYPE="${DTYPE:-float16}"
 GENERATOR_NAME="${GENERATOR_NAME:-meta-llama/Meta-Llama-3-8B-Instruct}"
 BASELINE_CONDITION="${BASELINE_CONDITION:-text}"
 USE_HF_QA="${USE_HF_QA:-auto}"
+SHUFFLE_CHOICES="${SHUFFLE_CHOICES:-1}"
+CHOICE_SEED="${CHOICE_SEED:-13}"
 RUN_BOOTSTRAP="${RUN_BOOTSTRAP:-1}"
 RUN_ALIGNMENT="${RUN_ALIGNMENT:-1}"
 RUN_EMBEDDINGS="${RUN_EMBEDDINGS:-1}"
@@ -125,6 +127,11 @@ fi
 if [[ -n "${MAX_READERS_PER_EXAMPLE:-}" ]]; then
   ALIGN_ARGS+=(--max-readers-per-example "${MAX_READERS_PER_EXAMPLE}")
 fi
+if [[ "${SHUFFLE_CHOICES}" == "1" ]]; then
+  ALIGN_ARGS+=(--shuffle-choices --choice-seed "${CHOICE_SEED}")
+else
+  ALIGN_ARGS+=(--no-shuffle-choices)
+fi
 
 GEN_ARGS=(
   --retrieval-path "${ART}/retrieval/retrieval_results.jsonl"
@@ -135,6 +142,11 @@ GEN_ARGS=(
   --scoring-mode loglik
   --conditions "${CONDITION_ARGS[@]}"
 )
+if [[ "${SHUFFLE_CHOICES}" == "1" ]]; then
+  GEN_ARGS+=(--shuffle-choices --choice-seed "${CHOICE_SEED}")
+else
+  GEN_ARGS+=(--no-shuffle-choices)
+fi
 if [[ -n "${MAX_RECORDS:-}" ]]; then
   GEN_ARGS+=(--max-records "${MAX_RECORDS}")
 fi
@@ -143,6 +155,8 @@ echo "ART=${ART}"
 echo "IA_PATH=${IA_PATH}"
 echo "CONDITIONS=${CONDITIONS}"
 echo "GENERATOR_NAME=${GENERATOR_NAME}"
+echo "SHUFFLE_CHOICES=${SHUFFLE_CHOICES}"
+echo "CHOICE_SEED=${CHOICE_SEED}"
 
 if [[ "${RUN_ALIGNMENT}" == "1" ]]; then
   "${PYTHON_BIN}" scripts/build_aligned_dataset.py "${ALIGN_ARGS[@]}" "${QA_ARGS[@]}"

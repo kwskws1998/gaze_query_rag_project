@@ -65,6 +65,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-readers-per-example", type=int, default=None)
     parser.add_argument("--chunksize", type=int, default=250_000)
     parser.add_argument("--use-hf", action="store_true")
+    parser.add_argument("--shuffle-choices", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--choice-seed", type=int, default=13)
     parser.add_argument("--include-practice", action="store_true")
     parser.add_argument("--exclude-repeated", action="store_true")
     return parser.parse_args()
@@ -233,9 +235,19 @@ def _aligned_to_dict(item: AlignedExample) -> dict:
 def main() -> None:
     args = parse_args()
     if args.use_hf:
-        qa_examples = load_onestop_qa(args.qa_dataset_name, args.qa_split, cache_dir=None)
+        qa_examples = load_onestop_qa(
+            args.qa_dataset_name,
+            args.qa_split,
+            cache_dir=None,
+            shuffle_choices=args.shuffle_choices,
+            choice_seed=args.choice_seed,
+        )
     else:
-        qa_examples = load_local_onestop_qa_json(args.qa_json_path)
+        qa_examples = load_local_onestop_qa_json(
+            args.qa_json_path,
+            shuffle_choices=args.shuffle_choices,
+            choice_seed=args.choice_seed,
+        )
     qa_examples = _limit_examples(qa_examples, args.max_examples)
     target_paragraph_ids = {qa.paragraph_id for qa in qa_examples}
     target_paragraph_texts = {_normalize_match_text(qa.paragraph_text) for qa in qa_examples}
@@ -262,6 +274,8 @@ def main() -> None:
             "qa_json_path": str(args.qa_json_path),
             "max_examples": args.max_examples,
             "max_readers_per_example": args.max_readers_per_example,
+            "shuffle_choices": args.shuffle_choices,
+            "choice_seed": args.choice_seed,
             "include_practice": args.include_practice,
             "exclude_repeated": args.exclude_repeated,
         }
@@ -277,6 +291,8 @@ def main() -> None:
                 "qa_examples": len(qa_examples),
                 "gaze_records": len(trimmed_gaze_records),
                 "aligned_examples": len(aligned),
+                "shuffle_choices": args.shuffle_choices,
+                "choice_seed": args.choice_seed,
                 "alignment_report": str(data_dir / "alignment_report.json"),
                 "aligned_examples_path": str(data_dir / "aligned_examples.jsonl"),
             },
