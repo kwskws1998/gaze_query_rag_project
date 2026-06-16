@@ -5,9 +5,9 @@ This repository should only push source code, configs, scripts, tests, and light
 Large local files are ignored by `.gitignore`:
 
 ```text
-OneStop-Eye-Movements/
-artifacts/
-data/
+/OneStop-Eye-Movements/
+/artifacts/
+/data/
 *.pdf
 *.zip
 *.csv.zip
@@ -43,3 +43,13 @@ git status --short
 ```
 
 Do not use `git add .` until after checking `.gitignore` behavior on the server.
+
+## Verify Package Files Are Staged
+
+The source package contains a real Python subpackage named `src/gaze_query_rag/data`.
+Do not ignore it accidentally.
+
+```bash
+git check-ignore -v src/gaze_query_rag/data/alignment.py || true
+git ls-files src/gaze_query_rag/data
+```

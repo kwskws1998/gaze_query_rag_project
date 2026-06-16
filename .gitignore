@@ -9,17 +9,17 @@ __pycache__/
 .ruff_cache/
 .ipynb_checkpoints/
 
-artifacts/
-data/
-.cache/
-cache/
-logs/
-wandb/
-runs/
-outputs/
-checkpoints/
-hf_cache/
-huggingface/
+/artifacts/
+/data/
+/.cache/
+/cache/
+/logs/
+/wandb/
+/runs/
+/outputs/
+/checkpoints/
+/hf_cache/
+/huggingface/
 *.npz
 *.jsonl
 *.log
@@ -39,10 +39,10 @@ huggingface/
 *.pt
 *.pth
 
-OneStop-Eye-Movements/
-OneStop-Eye-Movements-main/
-onestop-qa-master/
+/OneStop-Eye-Movements/
+/OneStop-Eye-Movements-main/
+/onestop-qa-master/
 
-build/
-dist/
+/build/
+/dist/
 *.egg-info/
