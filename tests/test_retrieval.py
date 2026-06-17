@@ -3,6 +3,7 @@ import numpy as np
 from gaze_query_rag.retrieval.index import build_in_memory_index, search_index
 from gaze_query_rag.retrieval.retriever import retrieve_gaze_view, retrieve_text_only
 from gaze_query_rag.schemas import Chunk, QAExample
+from scripts.run_retrieval import _retrieve_hybrid_group
 
 
 def _example() -> QAExample:
@@ -73,3 +74,40 @@ def test_retrieve_gaze_view_accepts_required_conditions() -> None:
     assert result.condition == "actual_gaze"
     assert result.reader_id == "r1"
     assert result.ranked_chunks == [("c2", 1.0)]
+
+
+def test_hybrid_retrieval_alpha_controls_text_gaze_mix() -> None:
+    query = np.array([1.0, 0.0])
+    text_rows = [
+        (
+            "text:c1",
+            np.array([1.0, 0.0]),
+            {"chunk_id": "c1", "text": "alpha", "char_start": 0, "char_end": 5},
+        ),
+        (
+            "text:c2",
+            np.array([0.0, 1.0]),
+            {"chunk_id": "c2", "text": "beta", "char_start": 6, "char_end": 10},
+        ),
+    ]
+    gaze_rows = [
+        (
+            "gaze:c1",
+            np.array([0.0, 1.0]),
+            {"chunk_id": "c1", "text": "alpha", "char_start": 0, "char_end": 5},
+        ),
+        (
+            "gaze:c2",
+            np.array([1.0, 0.0]),
+            {"chunk_id": "c2", "text": "beta", "char_start": 6, "char_end": 10},
+        ),
+    ]
+
+    text_heavy = _retrieve_hybrid_group("q1", "r1", 0.75, text_rows, gaze_rows, query, top_k=2)
+    gaze_heavy = _retrieve_hybrid_group("q1", "r1", 0.25, text_rows, gaze_rows, query, top_k=2)
+
+    assert text_heavy.condition == "hybrid_gaze_alpha_0p75"
+    assert gaze_heavy.condition == "hybrid_gaze_alpha_0p25"
+    assert text_heavy.ranked_chunks[0][0] == "c1"
+    assert gaze_heavy.ranked_chunks[0][0] == "c2"
+    assert text_heavy.metadata["evidence"][0]["alpha"] == 0.75

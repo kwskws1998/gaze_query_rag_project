@@ -26,6 +26,7 @@ CONDITION_FILES = {
     "mean_gaze": "gaze_chunks_mean.npz",
     "shuffled_gaze": "gaze_chunks_shuffled.npz",
 }
+HYBRID_PREFIX = "hybrid_gaze_alpha_"
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,7 +34,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--artifacts-dir", type=Path, default=ROOT / "artifacts")
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--conditions", nargs="+", default=list(CONDITION_FILES))
+    parser.add_argument("--hybrid-alphas", nargs="*", type=float, default=[])
     return parser.parse_args()
+
+
+def _alpha_label(alpha: float) -> str:
+    return f"{alpha:.6g}".replace(".", "p")
+
+
+def _hybrid_condition(alpha: float) -> str:
+    return f"{HYBRID_PREFIX}{_alpha_label(alpha)}"
+
+
+def _alpha_from_hybrid_condition(condition: str) -> float:
+    if not condition.startswith(HYBRID_PREFIX):
+        raise ValueError(f"Not a hybrid condition: {condition}")
+    return float(condition.removeprefix(HYBRID_PREFIX).replace("p", "."))
+
+
+def _is_hybrid_condition(condition: str) -> bool:
+    return condition.startswith(HYBRID_PREFIX)
+
+
+def _validate_alpha(alpha: float) -> None:
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError("hybrid alpha must satisfy 0 <= alpha <= 1.")
 
 
 def _load_embedding_npz(path: Path) -> tuple[list[str], np.ndarray, list[dict[str, Any]]]:
@@ -71,6 +96,38 @@ def _group_records(
     return grouped
 
 
+def _normalize_vector(vector: np.ndarray) -> np.ndarray:
+    norm = float(np.linalg.norm(vector))
+    if norm == 0.0 or not np.isfinite(norm):
+        return np.zeros_like(vector, dtype=np.float64)
+    return vector / norm
+
+
+def _records_by_chunk(
+    rows: list[tuple[str, np.ndarray, dict[str, Any]]],
+) -> dict[str, tuple[np.ndarray, dict[str, Any]]]:
+    by_chunk: dict[str, tuple[np.ndarray, dict[str, Any]]] = {}
+    for _, vector, record in rows:
+        chunk_id = str(record["chunk_id"])
+        by_chunk[chunk_id] = (np.asarray(vector, dtype=np.float64), record)
+    return by_chunk
+
+
+def _evidence_item(
+    record: dict[str, Any], score: float, extra: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    item = {
+        "chunk_id": record["chunk_id"],
+        "text": record["text"],
+        "score": score,
+        "char_start": record.get("char_start"),
+        "char_end": record.get("char_end"),
+    }
+    if extra:
+        item.update(extra)
+    return item
+
+
 def _retrieve_group(
     example_id: str,
     reader_id: str | None,
@@ -87,11 +144,7 @@ def _retrieve_group(
         for embedding_id, score in ranked_embedding_ids
     ]
     evidence = [
-        {
-            "chunk_id": record_by_id[embedding_id]["chunk_id"],
-            "text": record_by_id[embedding_id]["text"],
-            "score": score,
-        }
+        _evidence_item(record_by_id[embedding_id], score)
         for embedding_id, score in ranked_embedding_ids
     ]
     return RetrievalResult(
@@ -103,11 +156,82 @@ def _retrieve_group(
     )
 
 
+def _retrieve_hybrid_group(
+    example_id: str,
+    reader_id: str,
+    alpha: float,
+    text_rows: list[tuple[str, np.ndarray, dict[str, Any]]],
+    gaze_rows: list[tuple[str, np.ndarray, dict[str, Any]]],
+    query: np.ndarray,
+    top_k: int,
+) -> RetrievalResult:
+    _validate_alpha(alpha)
+    query_vector = _normalize_vector(np.asarray(query, dtype=np.float64))
+    text_by_chunk = _records_by_chunk(text_rows)
+    gaze_by_chunk = _records_by_chunk(gaze_rows)
+    shared_chunk_ids = sorted(set(text_by_chunk) & set(gaze_by_chunk))
+    if not shared_chunk_ids:
+        raise ValueError(f"No shared chunks for hybrid retrieval on {example_id!r}/{reader_id!r}.")
+
+    scored: list[tuple[str, float, float, float, dict[str, Any]]] = []
+    for chunk_id in shared_chunk_ids:
+        text_vector, text_record = text_by_chunk[chunk_id]
+        gaze_vector, gaze_record = gaze_by_chunk[chunk_id]
+        text_score = float(_normalize_vector(text_vector) @ query_vector)
+        gaze_score = float(_normalize_vector(gaze_vector) @ query_vector)
+        hybrid_score = alpha * text_score + (1.0 - alpha) * gaze_score
+        record = dict(gaze_record)
+        record["text"] = text_record.get("text", gaze_record.get("text", ""))
+        record["char_start"] = text_record.get("char_start", gaze_record.get("char_start"))
+        record["char_end"] = text_record.get("char_end", gaze_record.get("char_end"))
+        scored.append((chunk_id, hybrid_score, text_score, gaze_score, record))
+
+    scored.sort(key=lambda item: (-item[1], item[0]))
+    selected = scored[: min(top_k, len(scored))]
+    ranked_chunks = [(chunk_id, score) for chunk_id, score, _, _, _ in selected]
+    evidence = [
+        _evidence_item(
+            record,
+            hybrid_score,
+            {
+                "text_score": text_score,
+                "gaze_score": gaze_score,
+                "alpha": alpha,
+            },
+        )
+        for chunk_id, hybrid_score, text_score, gaze_score, record in selected
+    ]
+    condition = _hybrid_condition(alpha)
+    return RetrievalResult(
+        example_id=example_id,
+        reader_id=reader_id,
+        condition=condition,
+        ranked_chunks=ranked_chunks,
+        metadata={
+            "evidence": evidence,
+            "alpha": alpha,
+            "score_formula": "alpha*text+(1-alpha)*gaze",
+        },
+    )
+
+
 def main() -> None:
     args = parse_args()
     if args.top_k <= 0:
         raise ValueError("top_k must be positive.")
-    unknown = set(args.conditions) - set(CONDITION_FILES)
+    hybrid_from_alphas = [_hybrid_condition(alpha) for alpha in args.hybrid_alphas]
+    for alpha in args.hybrid_alphas:
+        _validate_alpha(alpha)
+    requested_conditions = list(dict.fromkeys([*args.conditions, *hybrid_from_alphas]))
+    hybrid_conditions = [condition for condition in requested_conditions if _is_hybrid_condition(condition)]
+    for condition in hybrid_conditions:
+        _validate_alpha(_alpha_from_hybrid_condition(condition))
+
+    unknown = {
+        condition
+        for condition in requested_conditions
+        if condition not in CONDITION_FILES and not _is_hybrid_condition(condition)
+    }
     if unknown:
         raise ValueError(f"Unsupported conditions: {sorted(unknown)}")
 
@@ -115,9 +239,23 @@ def main() -> None:
     query_by_example, query_records = _load_query_npz(embeddings_dir / "query_embeddings.npz")
     retrievals: list[RetrievalResult] = []
     counts: dict[str, int] = {}
-    for condition in args.conditions:
+    grouped_by_condition: dict[
+        str, dict[tuple[str, str | None], list[tuple[str, np.ndarray, dict[str, Any]]]]
+    ] = {}
+    required_embedding_conditions = {
+        condition for condition in requested_conditions if condition in CONDITION_FILES
+    }
+    if hybrid_conditions:
+        required_embedding_conditions.update({"text", "actual_gaze"})
+
+    for condition in sorted(required_embedding_conditions):
         ids, embeddings, records = _load_embedding_npz(embeddings_dir / CONDITION_FILES[condition])
-        grouped = _group_records(ids, embeddings, records)
+        grouped_by_condition[condition] = _group_records(ids, embeddings, records)
+
+    for condition in requested_conditions:
+        if _is_hybrid_condition(condition):
+            continue
+        grouped = grouped_by_condition[condition]
         for (example_id, reader_id), rows in sorted(grouped.items()):
             if example_id not in query_by_example:
                 raise KeyError(f"Missing query embedding for example {example_id!r}.")
@@ -133,11 +271,39 @@ def main() -> None:
             )
         counts[condition] = len(grouped)
 
+    for condition in hybrid_conditions:
+        alpha = _alpha_from_hybrid_condition(condition)
+        text_grouped = grouped_by_condition["text"]
+        gaze_grouped = grouped_by_condition["actual_gaze"]
+        hybrid_count = 0
+        for (example_id, reader_id), gaze_rows in sorted(gaze_grouped.items()):
+            if reader_id is None:
+                continue
+            if example_id not in query_by_example:
+                raise KeyError(f"Missing query embedding for example {example_id!r}.")
+            text_rows = text_grouped.get((example_id, None))
+            if text_rows is None:
+                raise KeyError(f"Missing text chunks for hybrid retrieval example {example_id!r}.")
+            retrievals.append(
+                _retrieve_hybrid_group(
+                    example_id,
+                    str(reader_id),
+                    alpha,
+                    text_rows,
+                    gaze_rows,
+                    query_by_example[example_id],
+                    args.top_k,
+                )
+            )
+            hybrid_count += 1
+        counts[condition] = hybrid_count
+
     retrieval_dir = args.artifacts_dir / "retrieval"
     write_jsonl(retrieval_dir / "retrieval_results.jsonl", retrievals)
     summary = {
         "top_k": args.top_k,
-        "conditions": args.conditions,
+        "conditions": requested_conditions,
+        "hybrid_alphas": args.hybrid_alphas,
         "query_examples": len(query_records),
         "retrieval_records": len(retrievals),
         "records_by_condition": counts,

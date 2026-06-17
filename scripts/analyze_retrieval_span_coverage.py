@@ -26,6 +26,7 @@ CONDITION_FILES = {
     "mean_gaze": "gaze_chunks_mean.npz",
     "shuffled_gaze": "gaze_chunks_shuffled.npz",
 }
+HYBRID_PREFIX = "hybrid_gaze_alpha_"
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +38,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--conditions", nargs="+", default=["text", "actual_gaze"])
     parser.add_argument("--top-k-values", nargs="+", type=int, default=[1, 3])
     return parser.parse_args()
+
+
+def _is_hybrid_condition(condition: str) -> bool:
+    return condition.startswith(HYBRID_PREFIX)
 
 
 def _word_char_spans(text: str) -> list[tuple[int, int]]:
@@ -107,10 +112,20 @@ def _load_records_for_conditions(
     embeddings_dir: Path, conditions: list[str]
 ) -> dict[tuple[str, str, str | None, str], dict[str, Any]]:
     records: dict[tuple[str, str, str | None, str], dict[str, Any]] = {}
-    for condition in conditions:
+    required_conditions = {
+        condition for condition in conditions if condition in CONDITION_FILES
+    }
+    if any(_is_hybrid_condition(condition) for condition in conditions):
+        required_conditions.update({"text", "actual_gaze"})
+    unknown = [
+        condition
+        for condition in conditions
+        if condition not in CONDITION_FILES and not _is_hybrid_condition(condition)
+    ]
+    if unknown:
+        raise ValueError(f"Unsupported conditions: {sorted(unknown)}")
+    for condition in sorted(required_conditions):
         filename = CONDITION_FILES.get(condition)
-        if filename is None:
-            raise ValueError(f"Unsupported condition: {condition}")
         path = embeddings_dir / filename
         if not path.exists():
             raise FileNotFoundError(path)
@@ -168,6 +183,38 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def _chunk_interval_from_evidence(row: dict[str, Any], chunk_id: str) -> tuple[int, int] | None:
+    for item in row.get("metadata", {}).get("evidence", []):
+        if str(item.get("chunk_id")) != chunk_id:
+            continue
+        if item.get("char_start") is None or item.get("char_end") is None:
+            return None
+        return (int(item["char_start"]), int(item["char_end"]))
+    return None
+
+
+def _chunk_interval_from_records(
+    chunk_records: dict[tuple[str, str, str | None, str], dict[str, Any]],
+    condition: str,
+    example_id: str,
+    reader_id: str | None,
+    chunk_id: str,
+) -> tuple[int, int]:
+    candidate_keys = [(condition, example_id, reader_id, chunk_id)]
+    if _is_hybrid_condition(condition):
+        candidate_keys.extend(
+            [
+                ("actual_gaze", example_id, reader_id, chunk_id),
+                ("text", example_id, None, chunk_id),
+            ]
+        )
+    for key in candidate_keys:
+        record = chunk_records.get(key)
+        if record is not None:
+            return (int(record["char_start"]), int(record["char_end"]))
+    raise KeyError(f"Missing chunk record for {(condition, example_id, reader_id, chunk_id)!r}")
+
+
 def main() -> None:
     args = parse_args()
     if any(top_k <= 0 for top_k in args.top_k_values):
@@ -194,12 +241,16 @@ def main() -> None:
             selected_chunks = ranked_chunks[:top_k]
             intervals: list[tuple[int, int]] = []
             for chunk_id in selected_chunks:
-                record = chunk_records.get((condition, example_id, reader_id, chunk_id))
-                if record is None:
-                    raise KeyError(
-                        f"Missing chunk record for {(condition, example_id, reader_id, chunk_id)!r}"
+                interval = _chunk_interval_from_evidence(row, chunk_id)
+                if interval is None:
+                    interval = _chunk_interval_from_records(
+                        chunk_records,
+                        condition,
+                        example_id,
+                        reader_id,
+                        chunk_id,
                     )
-                intervals.append((int(record["char_start"]), int(record["char_end"])))
+                intervals.append(interval)
             a_flags = _coverage_flags(intervals, qa_spans[example_id]["a_char_spans"])
             d_flags = _coverage_flags(intervals, qa_spans[example_id]["d_char_spans"])
             detail_rows.append(
