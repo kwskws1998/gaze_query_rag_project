@@ -26,6 +26,7 @@ CONDITION_FILES = {
     "mean_gaze": "gaze_chunks_mean.npz",
     "shuffled_gaze": "gaze_chunks_shuffled.npz",
     "actual_skip_hard": "skip_chunks_actual_hard.npz",
+    "predicted_trt_gaze": "gaze_chunks_predicted_trt.npz",
 }
 HYBRID_PREFIX = "hybrid_gaze_alpha_"
 RERANK_PREFIX = "text_top"

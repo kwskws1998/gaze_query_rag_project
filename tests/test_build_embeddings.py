@@ -81,3 +81,39 @@ def test_build_embeddings_stores_mean_gaze_once_per_example(tmp_path: Path) -> N
     assert {record["reader_id"] for record in mean_records} == {None}
     assert {record["reader_id"] for record in actual_records} == {"r1", "r2"}
     assert len(actual_records) == 2 * len(text_records)
+
+
+def test_build_embeddings_writes_predicted_trt_condition(tmp_path: Path) -> None:
+    aligned_path = tmp_path / "aligned_examples.jsonl"
+    artifacts_dir = tmp_path / "artifacts"
+    _write_aligned_fixture(aligned_path)
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/build_embeddings.py"),
+            "--aligned-path",
+            str(aligned_path),
+            "--artifacts-dir",
+            str(artifacts_dir),
+            "--encoder-backend",
+            "hash",
+            "--hash-dim",
+            "16",
+            "--chunk-strategy",
+            "sentence",
+            "--conditions",
+            "predicted_trt_gaze",
+            "--predicted-trt-backend",
+            "heuristic",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    predicted_records = _records(artifacts_dir / "embeddings/gaze_chunks_predicted_trt.npz")
+
+    assert {record["condition"] for record in predicted_records} == {"predicted_trt_gaze"}
+    assert {record["reader_id"] for record in predicted_records} == {None}

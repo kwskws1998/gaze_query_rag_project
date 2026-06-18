@@ -34,6 +34,14 @@ from gaze_query_rag.modeling.gaze_query_attention import (
     build_text_chunk_embeddings,
 )
 from gaze_query_rag.modeling.mean_gaze import MEAN_GAZE_CONDITION, build_mean_gaze_chunk_embeddings
+from gaze_query_rag.modeling.predicted_trt import (
+    PREDICTED_TRT_GAZE_CONDITION,
+    SKBOY_ET_REPO_ID,
+    SKBOY_ET_WEIGHTS,
+    build_predicted_trt_chunk_embeddings,
+    load_trt_predictor,
+    predicted_words_to_token_trt,
+)
 from gaze_query_rag.modeling.skip_attention import (
     SKIP_HARD_CONDITION,
     build_skip_hard_chunk_embeddings,
@@ -48,6 +56,13 @@ CONDITION_CHOICES = (
     MEAN_GAZE_CONDITION,
     "shuffled_gaze",
     SKIP_HARD_CONDITION,
+    PREDICTED_TRT_GAZE_CONDITION,
+)
+DEFAULT_CONDITIONS = (
+    "text",
+    "actual_gaze",
+    MEAN_GAZE_CONDITION,
+    "shuffled_gaze",
 )
 
 
@@ -67,7 +82,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stride", type=int, default=0)
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--max-examples", type=int, default=None)
-    parser.add_argument("--conditions", nargs="+", choices=CONDITION_CHOICES, default=list(CONDITION_CHOICES))
+    parser.add_argument("--conditions", nargs="+", choices=CONDITION_CHOICES, default=list(DEFAULT_CONDITIONS))
+    parser.add_argument("--predicted-trt-backend", choices=["skboy", "heuristic"], default="skboy")
+    parser.add_argument("--predicted-trt-model-name", default=SKBOY_ET_REPO_ID)
+    parser.add_argument("--predicted-trt-weights", default=SKBOY_ET_WEIGHTS)
+    parser.add_argument("--predicted-trt-local-files-only", action="store_true")
     return parser.parse_args()
 
 
@@ -236,8 +255,20 @@ def main() -> None:
     skip_ids: list[str] = []
     skip_vectors: list[np.ndarray] = []
     skip_records: list[dict[str, Any]] = []
+    predicted_ids: list[str] = []
+    predicted_vectors: list[np.ndarray] = []
+    predicted_records: list[dict[str, Any]] = []
     query_rows: list[dict[str, Any]] = []
     query_vectors: list[np.ndarray] = []
+    trt_predictor = None
+    if PREDICTED_TRT_GAZE_CONDITION in selected_conditions:
+        trt_predictor = load_trt_predictor(
+            backend=args.predicted_trt_backend,
+            repo_id=args.predicted_trt_model_name,
+            weights_filename=args.predicted_trt_weights,
+            cache_dir=args.cache_dir,
+            local_files_only=args.predicted_trt_local_files_only,
+        )
 
     for example_index, example in enumerate(aligned_examples):
         chunks = chunk_paragraph(
@@ -263,6 +294,36 @@ def main() -> None:
             text_ids.extend(ids)
             text_vectors.extend(vectors)
             text_records.extend(records)
+
+        if PREDICTED_TRT_GAZE_CONDITION in selected_conditions:
+            if trt_predictor is None:
+                raise RuntimeError("TRT predictor was not loaded.")
+            predicted_words = trt_predictor.predict_words(example.qa.paragraph_text)
+            predicted_word_to_token = build_word_to_token_alignment(
+                example.qa.paragraph_text,
+                [row.word for row in predicted_words],
+                encoding.offset_mapping,
+            )
+            predicted_token_trt = predicted_words_to_token_trt(
+                predicted_words,
+                predicted_word_to_token,
+                encoding.hidden_states.shape[0],
+            )
+            predicted_embeddings = build_predicted_trt_chunk_embeddings(
+                encoding.hidden_states,
+                predicted_token_trt,
+                chunks,
+            )
+            ids, vectors, records = _records_for_embeddings(
+                example,
+                None,
+                PREDICTED_TRT_GAZE_CONDITION,
+                chunks,
+                predicted_embeddings,
+            )
+            predicted_ids.extend(ids)
+            predicted_vectors.extend(vectors)
+            predicted_records.extend(records)
 
         gaze_conditions = {"actual_gaze", MEAN_GAZE_CONDITION, "shuffled_gaze"}
         skip_conditions = {SKIP_HARD_CONDITION}
@@ -364,6 +425,13 @@ def main() -> None:
         _save_embedding_npz(
             embeddings_dir / "skip_chunks_actual_hard.npz", skip_ids, skip_vectors, skip_records
         )
+    if PREDICTED_TRT_GAZE_CONDITION in selected_conditions:
+        _save_embedding_npz(
+            embeddings_dir / "gaze_chunks_predicted_trt.npz",
+            predicted_ids,
+            predicted_vectors,
+            predicted_records,
+        )
     _save_query_npz(embeddings_dir / "query_embeddings.npz", query_rows, query_vectors)
     summary = {
         "encoder_backend": args.encoder_backend,
@@ -376,6 +444,17 @@ def main() -> None:
         "mean_gaze_embeddings": len(mean_ids),
         "shuffled_gaze_embeddings": len(shuffled_ids),
         "actual_skip_hard_embeddings": len(skip_ids),
+        "predicted_trt_gaze_embeddings": len(predicted_ids),
+        "predicted_trt_backend": (
+            args.predicted_trt_backend
+            if PREDICTED_TRT_GAZE_CONDITION in selected_conditions
+            else None
+        ),
+        "predicted_trt_model_name": (
+            args.predicted_trt_model_name
+            if PREDICTED_TRT_GAZE_CONDITION in selected_conditions
+            else None
+        ),
         "query_embeddings": len(query_rows),
     }
     write_json(embeddings_dir / "embedding_summary.json", summary)
