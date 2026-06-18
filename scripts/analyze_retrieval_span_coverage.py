@@ -25,8 +25,11 @@ CONDITION_FILES = {
     "actual_gaze": "gaze_chunks_actual.npz",
     "mean_gaze": "gaze_chunks_mean.npz",
     "shuffled_gaze": "gaze_chunks_shuffled.npz",
+    "actual_skip_hard": "skip_chunks_actual_hard.npz",
 }
 HYBRID_PREFIX = "hybrid_gaze_alpha_"
+RERANK_PREFIX = "text_top"
+RERANK_SUFFIX = "_gaze_rerank"
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,6 +45,14 @@ def parse_args() -> argparse.Namespace:
 
 def _is_hybrid_condition(condition: str) -> bool:
     return condition.startswith(HYBRID_PREFIX)
+
+
+def _is_rerank_condition(condition: str) -> bool:
+    return condition.startswith(RERANK_PREFIX) and condition.endswith(RERANK_SUFFIX)
+
+
+def _is_composite_condition(condition: str) -> bool:
+    return _is_hybrid_condition(condition) or _is_rerank_condition(condition)
 
 
 def _word_char_spans(text: str) -> list[tuple[int, int]]:
@@ -115,12 +126,12 @@ def _load_records_for_conditions(
     required_conditions = {
         condition for condition in conditions if condition in CONDITION_FILES
     }
-    if any(_is_hybrid_condition(condition) for condition in conditions):
+    if any(_is_composite_condition(condition) for condition in conditions):
         required_conditions.update({"text", "actual_gaze"})
     unknown = [
         condition
         for condition in conditions
-        if condition not in CONDITION_FILES and not _is_hybrid_condition(condition)
+        if condition not in CONDITION_FILES and not _is_composite_condition(condition)
     ]
     if unknown:
         raise ValueError(f"Unsupported conditions: {sorted(unknown)}")
@@ -201,7 +212,7 @@ def _chunk_interval_from_records(
     chunk_id: str,
 ) -> tuple[int, int]:
     candidate_keys = [(condition, example_id, reader_id, chunk_id)]
-    if _is_hybrid_condition(condition):
+    if _is_composite_condition(condition):
         candidate_keys.extend(
             [
                 ("actual_gaze", example_id, reader_id, chunk_id),

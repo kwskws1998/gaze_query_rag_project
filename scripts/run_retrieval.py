@@ -25,8 +25,11 @@ CONDITION_FILES = {
     "actual_gaze": "gaze_chunks_actual.npz",
     "mean_gaze": "gaze_chunks_mean.npz",
     "shuffled_gaze": "gaze_chunks_shuffled.npz",
+    "actual_skip_hard": "skip_chunks_actual_hard.npz",
 }
 HYBRID_PREFIX = "hybrid_gaze_alpha_"
+RERANK_PREFIX = "text_top"
+RERANK_SUFFIX = "_gaze_rerank"
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--conditions", nargs="+", default=list(CONDITION_FILES))
     parser.add_argument("--hybrid-alphas", nargs="*", type=float, default=[])
+    parser.add_argument("--rerank-candidate-top-n", nargs="*", type=int, default=[])
     return parser.parse_args()
 
 
@@ -56,9 +60,31 @@ def _is_hybrid_condition(condition: str) -> bool:
     return condition.startswith(HYBRID_PREFIX)
 
 
+def _rerank_condition(candidate_top_n: int) -> str:
+    return f"{RERANK_PREFIX}{candidate_top_n}{RERANK_SUFFIX}"
+
+
+def _candidate_top_n_from_rerank_condition(condition: str) -> int:
+    if not _is_rerank_condition(condition):
+        raise ValueError(f"Not a rerank condition: {condition}")
+    value = condition.removeprefix(RERANK_PREFIX).removesuffix(RERANK_SUFFIX)
+    return int(value)
+
+
+def _is_rerank_condition(condition: str) -> bool:
+    return condition.startswith(RERANK_PREFIX) and condition.endswith(RERANK_SUFFIX)
+
+
 def _validate_alpha(alpha: float) -> None:
     if not 0.0 <= alpha <= 1.0:
         raise ValueError("hybrid alpha must satisfy 0 <= alpha <= 1.")
+
+
+def _validate_candidate_top_n(candidate_top_n: int, top_k: int) -> None:
+    if candidate_top_n <= 0:
+        raise ValueError("rerank candidate_top_n must be positive.")
+    if candidate_top_n < top_k:
+        raise ValueError("rerank candidate_top_n must be greater than or equal to top_k.")
 
 
 def _load_embedding_npz(path: Path) -> tuple[list[str], np.ndarray, list[dict[str, Any]]]:
@@ -215,6 +241,71 @@ def _retrieve_hybrid_group(
     )
 
 
+def _retrieve_text_candidate_gaze_rerank_group(
+    example_id: str,
+    reader_id: str,
+    candidate_top_n: int,
+    text_rows: list[tuple[str, np.ndarray, dict[str, Any]]],
+    gaze_rows: list[tuple[str, np.ndarray, dict[str, Any]]],
+    query: np.ndarray,
+    top_k: int,
+) -> RetrievalResult:
+    _validate_candidate_top_n(candidate_top_n, top_k)
+    query_vector = _normalize_vector(np.asarray(query, dtype=np.float64))
+    text_by_chunk = _records_by_chunk(text_rows)
+    gaze_by_chunk = _records_by_chunk(gaze_rows)
+    shared_chunk_ids = sorted(set(text_by_chunk) & set(gaze_by_chunk))
+    if not shared_chunk_ids:
+        raise ValueError(f"No shared chunks for rerank retrieval on {example_id!r}/{reader_id!r}.")
+
+    scored: list[tuple[str, float, float, dict[str, Any]]] = []
+    for chunk_id in shared_chunk_ids:
+        text_vector, text_record = text_by_chunk[chunk_id]
+        gaze_vector, gaze_record = gaze_by_chunk[chunk_id]
+        text_score = float(_normalize_vector(text_vector) @ query_vector)
+        gaze_score = float(_normalize_vector(gaze_vector) @ query_vector)
+        record = dict(gaze_record)
+        record["text"] = text_record.get("text", gaze_record.get("text", ""))
+        record["char_start"] = text_record.get("char_start", gaze_record.get("char_start"))
+        record["char_end"] = text_record.get("char_end", gaze_record.get("char_end"))
+        scored.append((chunk_id, text_score, gaze_score, record))
+
+    text_candidates = sorted(scored, key=lambda item: (-item[1], item[0]))[
+        : min(candidate_top_n, len(scored))
+    ]
+    text_rank_by_chunk = {
+        chunk_id: rank + 1 for rank, (chunk_id, _, _, _) in enumerate(text_candidates)
+    }
+    reranked = sorted(text_candidates, key=lambda item: (-item[2], -item[1], item[0]))
+    selected = reranked[: min(top_k, len(reranked))]
+    ranked_chunks = [(chunk_id, gaze_score) for chunk_id, _, gaze_score, _ in selected]
+    evidence = [
+        _evidence_item(
+            record,
+            gaze_score,
+            {
+                "text_score": text_score,
+                "gaze_score": gaze_score,
+                "text_candidate_rank": text_rank_by_chunk[chunk_id],
+                "candidate_top_n": candidate_top_n,
+            },
+        )
+        for chunk_id, text_score, gaze_score, record in selected
+    ]
+    condition = _rerank_condition(candidate_top_n)
+    return RetrievalResult(
+        example_id=example_id,
+        reader_id=reader_id,
+        condition=condition,
+        ranked_chunks=ranked_chunks,
+        metadata={
+            "evidence": evidence,
+            "candidate_top_n": candidate_top_n,
+            "score_formula": "text top-N candidates, reranked by gaze score",
+        },
+    )
+
+
 def main() -> None:
     args = parse_args()
     if args.top_k <= 0:
@@ -222,15 +313,30 @@ def main() -> None:
     hybrid_from_alphas = [_hybrid_condition(alpha) for alpha in args.hybrid_alphas]
     for alpha in args.hybrid_alphas:
         _validate_alpha(alpha)
-    requested_conditions = list(dict.fromkeys([*args.conditions, *hybrid_from_alphas]))
+    rerank_from_candidates = [
+        _rerank_condition(candidate_top_n)
+        for candidate_top_n in args.rerank_candidate_top_n
+    ]
+    for candidate_top_n in args.rerank_candidate_top_n:
+        _validate_candidate_top_n(candidate_top_n, args.top_k)
+    requested_conditions = list(
+        dict.fromkeys([*args.conditions, *hybrid_from_alphas, *rerank_from_candidates])
+    )
     hybrid_conditions = [condition for condition in requested_conditions if _is_hybrid_condition(condition)]
     for condition in hybrid_conditions:
         _validate_alpha(_alpha_from_hybrid_condition(condition))
+    rerank_conditions = [condition for condition in requested_conditions if _is_rerank_condition(condition)]
+    for condition in rerank_conditions:
+        _validate_candidate_top_n(_candidate_top_n_from_rerank_condition(condition), args.top_k)
 
     unknown = {
         condition
         for condition in requested_conditions
-        if condition not in CONDITION_FILES and not _is_hybrid_condition(condition)
+        if (
+            condition not in CONDITION_FILES
+            and not _is_hybrid_condition(condition)
+            and not _is_rerank_condition(condition)
+        )
     }
     if unknown:
         raise ValueError(f"Unsupported conditions: {sorted(unknown)}")
@@ -245,7 +351,7 @@ def main() -> None:
     required_embedding_conditions = {
         condition for condition in requested_conditions if condition in CONDITION_FILES
     }
-    if hybrid_conditions:
+    if hybrid_conditions or rerank_conditions:
         required_embedding_conditions.update({"text", "actual_gaze"})
 
     for condition in sorted(required_embedding_conditions):
@@ -253,7 +359,7 @@ def main() -> None:
         grouped_by_condition[condition] = _group_records(ids, embeddings, records)
 
     for condition in requested_conditions:
-        if _is_hybrid_condition(condition):
+        if _is_hybrid_condition(condition) or _is_rerank_condition(condition):
             continue
         grouped = grouped_by_condition[condition]
         for (example_id, reader_id), rows in sorted(grouped.items()):
@@ -298,12 +404,40 @@ def main() -> None:
             hybrid_count += 1
         counts[condition] = hybrid_count
 
+    for condition in rerank_conditions:
+        candidate_top_n = _candidate_top_n_from_rerank_condition(condition)
+        text_grouped = grouped_by_condition["text"]
+        gaze_grouped = grouped_by_condition["actual_gaze"]
+        rerank_count = 0
+        for (example_id, reader_id), gaze_rows in sorted(gaze_grouped.items()):
+            if reader_id is None:
+                continue
+            if example_id not in query_by_example:
+                raise KeyError(f"Missing query embedding for example {example_id!r}.")
+            text_rows = text_grouped.get((example_id, None))
+            if text_rows is None:
+                raise KeyError(f"Missing text chunks for rerank retrieval example {example_id!r}.")
+            retrievals.append(
+                _retrieve_text_candidate_gaze_rerank_group(
+                    example_id,
+                    str(reader_id),
+                    candidate_top_n,
+                    text_rows,
+                    gaze_rows,
+                    query_by_example[example_id],
+                    args.top_k,
+                )
+            )
+            rerank_count += 1
+        counts[condition] = rerank_count
+
     retrieval_dir = args.artifacts_dir / "retrieval"
     write_jsonl(retrieval_dir / "retrieval_results.jsonl", retrievals)
     summary = {
         "top_k": args.top_k,
         "conditions": requested_conditions,
         "hybrid_alphas": args.hybrid_alphas,
+        "rerank_candidate_top_n": args.rerank_candidate_top_n,
         "query_examples": len(query_records),
         "retrieval_records": len(retrievals),
         "records_by_condition": counts,

@@ -3,7 +3,7 @@ import numpy as np
 from gaze_query_rag.retrieval.index import build_in_memory_index, search_index
 from gaze_query_rag.retrieval.retriever import retrieve_gaze_view, retrieve_text_only
 from gaze_query_rag.schemas import Chunk, QAExample
-from scripts.run_retrieval import _retrieve_hybrid_group
+from scripts.run_retrieval import _retrieve_hybrid_group, _retrieve_text_candidate_gaze_rerank_group
 
 
 def _example() -> QAExample:
@@ -111,3 +111,56 @@ def test_hybrid_retrieval_alpha_controls_text_gaze_mix() -> None:
     assert text_heavy.ranked_chunks[0][0] == "c1"
     assert gaze_heavy.ranked_chunks[0][0] == "c2"
     assert text_heavy.metadata["evidence"][0]["alpha"] == 0.75
+
+
+def test_text_candidate_gaze_rerank_filters_to_text_candidates() -> None:
+    query = np.array([1.0, 0.0])
+    text_rows = [
+        (
+            "text:c1",
+            np.array([1.0, 0.0]),
+            {"chunk_id": "c1", "text": "alpha", "char_start": 0, "char_end": 5},
+        ),
+        (
+            "text:c2",
+            np.array([0.8, 0.6]),
+            {"chunk_id": "c2", "text": "beta", "char_start": 6, "char_end": 10},
+        ),
+        (
+            "text:c3",
+            np.array([0.0, 1.0]),
+            {"chunk_id": "c3", "text": "gamma", "char_start": 11, "char_end": 16},
+        ),
+    ]
+    gaze_rows = [
+        (
+            "gaze:c1",
+            np.array([0.0, 1.0]),
+            {"chunk_id": "c1", "text": "alpha", "char_start": 0, "char_end": 5},
+        ),
+        (
+            "gaze:c2",
+            np.array([1.0, 0.0]),
+            {"chunk_id": "c2", "text": "beta", "char_start": 6, "char_end": 10},
+        ),
+        (
+            "gaze:c3",
+            np.array([1.0, 0.0]),
+            {"chunk_id": "c3", "text": "gamma", "char_start": 11, "char_end": 16},
+        ),
+    ]
+
+    result = _retrieve_text_candidate_gaze_rerank_group(
+        "q1",
+        "r1",
+        candidate_top_n=2,
+        text_rows=text_rows,
+        gaze_rows=gaze_rows,
+        query=query,
+        top_k=1,
+    )
+
+    assert result.condition == "text_top2_gaze_rerank"
+    assert result.ranked_chunks == [("c2", 1.0)]
+    assert result.metadata["candidate_top_n"] == 2
+    assert result.metadata["evidence"][0]["text_candidate_rank"] == 2

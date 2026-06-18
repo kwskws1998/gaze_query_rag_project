@@ -34,10 +34,21 @@ from gaze_query_rag.modeling.gaze_query_attention import (
     build_text_chunk_embeddings,
 )
 from gaze_query_rag.modeling.mean_gaze import MEAN_GAZE_CONDITION, build_mean_gaze_chunk_embeddings
+from gaze_query_rag.modeling.skip_attention import (
+    SKIP_HARD_CONDITION,
+    build_skip_hard_chunk_embeddings,
+    word_skip_to_token_query_weights,
+)
 from gaze_query_rag.schemas import AlignedExample, Chunk, TokenEncoding
 
 
-CONDITION_CHOICES = ("text", "actual_gaze", MEAN_GAZE_CONDITION, "shuffled_gaze")
+CONDITION_CHOICES = (
+    "text",
+    "actual_gaze",
+    MEAN_GAZE_CONDITION,
+    "shuffled_gaze",
+    SKIP_HARD_CONDITION,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -190,6 +201,13 @@ def _reader_trt(example: AlignedExample, reader_id: str) -> np.ndarray:
     return np.asarray([record.trt for record in example.reader_gaze[reader_id]], dtype=np.float64)
 
 
+def _reader_skip(example: AlignedExample, reader_id: str) -> np.ndarray:
+    return np.asarray(
+        [0.0 if record.skip is None else record.skip for record in example.reader_gaze[reader_id]],
+        dtype=np.float64,
+    )
+
+
 def main() -> None:
     args = parse_args()
     selected_conditions = set(args.conditions)
@@ -215,6 +233,9 @@ def main() -> None:
     shuffled_ids: list[str] = []
     shuffled_vectors: list[np.ndarray] = []
     shuffled_records: list[dict[str, Any]] = []
+    skip_ids: list[str] = []
+    skip_vectors: list[np.ndarray] = []
+    skip_records: list[dict[str, Any]] = []
     query_rows: list[dict[str, Any]] = []
     query_vectors: list[np.ndarray] = []
 
@@ -244,17 +265,28 @@ def main() -> None:
             text_records.extend(records)
 
         gaze_conditions = {"actual_gaze", MEAN_GAZE_CONDITION, "shuffled_gaze"}
+        skip_conditions = {SKIP_HARD_CONDITION}
         gaze_by_reader: dict[str, np.ndarray] = {}
-        if selected_conditions & gaze_conditions:
+        skip_weights_by_reader: dict[str, np.ndarray] = {}
+        if selected_conditions & (gaze_conditions | skip_conditions):
             for reader_id in sorted(example.reader_gaze):
                 words = _reader_words(example, reader_id)
                 word_to_token = build_word_to_token_alignment(
                     example.qa.paragraph_text, words, encoding.offset_mapping
                 )
-                token_trt = word_trt_to_token_trt(
-                    _reader_trt(example, reader_id), word_to_token, encoding.hidden_states.shape[0]
-                )
-                gaze_by_reader[reader_id] = compute_gaze_distribution(token_trt)
+                if selected_conditions & gaze_conditions:
+                    token_trt = word_trt_to_token_trt(
+                        _reader_trt(example, reader_id),
+                        word_to_token,
+                        encoding.hidden_states.shape[0],
+                    )
+                    gaze_by_reader[reader_id] = compute_gaze_distribution(token_trt)
+                if SKIP_HARD_CONDITION in selected_conditions:
+                    skip_weights_by_reader[reader_id] = word_skip_to_token_query_weights(
+                        _reader_skip(example, reader_id),
+                        word_to_token,
+                        encoding.hidden_states.shape[0],
+                    )
 
         if MEAN_GAZE_CONDITION in selected_conditions:
             mean_embeddings = build_mean_gaze_chunk_embeddings(
@@ -293,6 +325,17 @@ def main() -> None:
                 shuffled_vectors.extend(vectors)
                 shuffled_records.extend(records)
 
+        for reader_id in sorted(skip_weights_by_reader):
+            skip_embeddings = build_skip_hard_chunk_embeddings(
+                encoding.hidden_states, skip_weights_by_reader[reader_id], chunks
+            )
+            ids, vectors, records = _records_for_embeddings(
+                example, reader_id, SKIP_HARD_CONDITION, chunks, skip_embeddings
+            )
+            skip_ids.extend(ids)
+            skip_vectors.extend(vectors)
+            skip_records.extend(records)
+
         query_rows.append(
             {
                 "example_id": example.qa.example_id,
@@ -317,6 +360,10 @@ def main() -> None:
         _save_embedding_npz(
             embeddings_dir / "gaze_chunks_shuffled.npz", shuffled_ids, shuffled_vectors, shuffled_records
         )
+    if SKIP_HARD_CONDITION in selected_conditions:
+        _save_embedding_npz(
+            embeddings_dir / "skip_chunks_actual_hard.npz", skip_ids, skip_vectors, skip_records
+        )
     _save_query_npz(embeddings_dir / "query_embeddings.npz", query_rows, query_vectors)
     summary = {
         "encoder_backend": args.encoder_backend,
@@ -328,6 +375,7 @@ def main() -> None:
         "actual_gaze_embeddings": len(actual_ids),
         "mean_gaze_embeddings": len(mean_ids),
         "shuffled_gaze_embeddings": len(shuffled_ids),
+        "actual_skip_hard_embeddings": len(skip_ids),
         "query_embeddings": len(query_rows),
     }
     write_json(embeddings_dir / "embedding_summary.json", summary)
