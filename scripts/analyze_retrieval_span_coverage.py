@@ -31,6 +31,7 @@ CONDITION_FILES = {
 HYBRID_PREFIX = "hybrid_gaze_alpha_"
 RERANK_PREFIX = "text_top"
 RERANK_SUFFIX = "_gaze_rerank"
+POOL_MAXSIM_CONDITION = "actual_gaze_pool_maxsim"
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,8 +53,16 @@ def _is_rerank_condition(condition: str) -> bool:
     return condition.startswith(RERANK_PREFIX) and condition.endswith(RERANK_SUFFIX)
 
 
+def _is_pool_maxsim_condition(condition: str) -> bool:
+    return condition == POOL_MAXSIM_CONDITION
+
+
 def _is_composite_condition(condition: str) -> bool:
-    return _is_hybrid_condition(condition) or _is_rerank_condition(condition)
+    return (
+        _is_hybrid_condition(condition)
+        or _is_rerank_condition(condition)
+        or _is_pool_maxsim_condition(condition)
+    )
 
 
 def _word_char_spans(text: str) -> list[tuple[int, int]]:

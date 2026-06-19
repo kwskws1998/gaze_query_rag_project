@@ -31,6 +31,7 @@ CONDITION_FILES = {
 HYBRID_PREFIX = "hybrid_gaze_alpha_"
 RERANK_PREFIX = "text_top"
 RERANK_SUFFIX = "_gaze_rerank"
+POOL_MAXSIM_CONDITION = "actual_gaze_pool_maxsim"
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,6 +75,10 @@ def _candidate_top_n_from_rerank_condition(condition: str) -> int:
 
 def _is_rerank_condition(condition: str) -> bool:
     return condition.startswith(RERANK_PREFIX) and condition.endswith(RERANK_SUFFIX)
+
+
+def _is_pool_maxsim_condition(condition: str) -> bool:
+    return condition == POOL_MAXSIM_CONDITION
 
 
 def _validate_alpha(alpha: float) -> None:
@@ -307,6 +312,47 @@ def _retrieve_text_candidate_gaze_rerank_group(
     )
 
 
+def _retrieve_pool_maxsim_group(
+    example_id: str,
+    gaze_groups: list[tuple[str, list[tuple[str, np.ndarray, dict[str, Any]]]]],
+    query: np.ndarray,
+    top_k: int,
+) -> RetrievalResult:
+    query_vector = _normalize_vector(np.asarray(query, dtype=np.float64))
+    scored: list[tuple[str, float, str, dict[str, Any]]] = []
+    for reader_id, rows in gaze_groups:
+        for _, vector, record in rows:
+            score = float(_normalize_vector(vector) @ query_vector)
+            scored.append((str(record["chunk_id"]), score, reader_id, record))
+    if not scored:
+        raise ValueError(f"No gaze rows available for pool max-sim retrieval on {example_id!r}.")
+
+    scored.sort(key=lambda item: (-item[1], item[2], item[0]))
+    selected = scored[: min(top_k, len(scored))]
+    ranked_chunks = [(chunk_id, score) for chunk_id, score, _, _ in selected]
+    evidence = [
+        _evidence_item(
+            record,
+            score,
+            {
+                "selected_reader_id": reader_id,
+            },
+        )
+        for chunk_id, score, reader_id, record in selected
+    ]
+    return RetrievalResult(
+        example_id=example_id,
+        reader_id=None,
+        condition=POOL_MAXSIM_CONDITION,
+        ranked_chunks=ranked_chunks,
+        metadata={
+            "evidence": evidence,
+            "selected_reader_id": selected[0][2],
+            "score_formula": "max over reader/chunk q dot z_gaze",
+        },
+    )
+
+
 def main() -> None:
     args = parse_args()
     if args.top_k <= 0:
@@ -329,6 +375,9 @@ def main() -> None:
     rerank_conditions = [condition for condition in requested_conditions if _is_rerank_condition(condition)]
     for condition in rerank_conditions:
         _validate_candidate_top_n(_candidate_top_n_from_rerank_condition(condition), args.top_k)
+    pool_maxsim_conditions = [
+        condition for condition in requested_conditions if _is_pool_maxsim_condition(condition)
+    ]
 
     unknown = {
         condition
@@ -337,6 +386,7 @@ def main() -> None:
             condition not in CONDITION_FILES
             and not _is_hybrid_condition(condition)
             and not _is_rerank_condition(condition)
+            and not _is_pool_maxsim_condition(condition)
         )
     }
     if unknown:
@@ -354,13 +404,19 @@ def main() -> None:
     }
     if hybrid_conditions or rerank_conditions:
         required_embedding_conditions.update({"text", "actual_gaze"})
+    if pool_maxsim_conditions:
+        required_embedding_conditions.add("actual_gaze")
 
     for condition in sorted(required_embedding_conditions):
         ids, embeddings, records = _load_embedding_npz(embeddings_dir / CONDITION_FILES[condition])
         grouped_by_condition[condition] = _group_records(ids, embeddings, records)
 
     for condition in requested_conditions:
-        if _is_hybrid_condition(condition) or _is_rerank_condition(condition):
+        if (
+            _is_hybrid_condition(condition)
+            or _is_rerank_condition(condition)
+            or _is_pool_maxsim_condition(condition)
+        ):
             continue
         grouped = grouped_by_condition[condition]
         for (example_id, reader_id), rows in sorted(grouped.items()):
@@ -431,6 +487,31 @@ def main() -> None:
             )
             rerank_count += 1
         counts[condition] = rerank_count
+
+    for condition in pool_maxsim_conditions:
+        gaze_grouped = grouped_by_condition["actual_gaze"]
+        gaze_by_example: dict[
+            str, list[tuple[str, list[tuple[str, np.ndarray, dict[str, Any]]]]]
+        ] = defaultdict(list)
+        for (example_id, reader_id), gaze_rows in sorted(gaze_grouped.items()):
+            if reader_id is None:
+                continue
+            gaze_by_example[example_id].append((str(reader_id), gaze_rows))
+
+        pool_count = 0
+        for example_id, gaze_groups in sorted(gaze_by_example.items()):
+            if example_id not in query_by_example:
+                raise KeyError(f"Missing query embedding for example {example_id!r}.")
+            retrievals.append(
+                _retrieve_pool_maxsim_group(
+                    example_id,
+                    gaze_groups,
+                    query_by_example[example_id],
+                    args.top_k,
+                )
+            )
+            pool_count += 1
+        counts[condition] = pool_count
 
     retrieval_dir = args.artifacts_dir / "retrieval"
     write_jsonl(retrieval_dir / "retrieval_results.jsonl", retrievals)
